@@ -1,0 +1,99 @@
+---
+title: 'Week 8: Example for Web Scraping with CSS Selectors'
+---
+
+### Claimer: This document  is retrieved from:
+1) https://raw.githubusercontent.com/datasciencelabs/2020/master/03_wrangling/06_web-scraping.Rmd)
+2) https://raw.githubusercontent.com/gulinan/lectures/master/06-web-css/06-web-css.Rmd
+3) https://github.com/grantmcdermott
+
+
+### CSS Selectors
+
+The default look of a webpage made with the most basic HTML is quite unattractive. The aesthetically pleasing pages we see today are made using CSS. CSS is used to add style to webpages. The general way these CSS files work is by defining how each of the elements of a webpage will look. The title, headings, itemized lists, tables, and links for example each receive their own style including font, color, size, and distance from the margin, among others. To do this CSS leverages patterns used to define these elements, referred to as _selectors_. An example of a pattern we used above is `table` but there are many many more. 
+
+So if we want to grab data from a web page and we happen to know a selector that is unique to the part of the page, so that we can use the `html_elements()` function. However, knowing which selector can be quite complicated.  However, selector gadgets actually make this possible.
+
+[SelectorGadget](http://selectorgadget.com/) is piece of software that allows you to interactively determine what css selector you need to extract specific components from the web page. If you plan on scrapping data other than tables we highly recommend you install it. A Chrome extension is available which permits you to turn on the gadget and then as you click through the page it highlights parts and shows you the selector you need to extract these parts. There are various demos of how to do this. https://www.w3schools.com/cssref/trysel.asp
+
+
+Now visit the Minneapolis Craigslist to get computer prices, computer brand names, sale date, and sale location.
+So, we need to identify the CSS selectors in order to extract the relevant information from this page, 
+which involves quite a lot of iterative clicking with SelectorGadget.
+
+
+```{r}
+base_url <- "https://minneapolis.craigslist.org/d/computers/search/sya"
+craiglist <- read_html(base_url)
+computers <-  craiglist %>% 
+              html_elements(".result-hood , .hdrlnk , .result-date , .result-price")
+computers
+``` 
+
+```{r}
+computers_text <- html_text(computers)  ## parse as text
+head(computers_text, 20)
+str(computers_text)
+```
+
+### Coercing to a data frame
+
+We now have a bit of work on our hands to convert this vector of strings into a usable data frame. (Remember: Webscraping is as much art as it is science.) The general approach that we want to adopt is to look for some kind of "quasi-regular" structure that we can exploit. 
+
+For example, we can see from my screenshot above that each sale item tends to have five separate text fields. (Counter-clockwise from the top: *price*, *listing date*, *description*, *price* (again), and *location*.) Based on this, we might try to transform the vector into a (transposed) matrix with five columns and from there into a data frame.
+
+```{r error=TRUE}
+# first take the transpose
+head(as.data.frame(t(matrix(computers_text, nrow=5))))
+```
+
+Actually, this approach isn't going to work because not every sale item lists all five text fields. Quite a few are missing the location field, for instance.
+
+```{r}
+# https://cran.r-project.org/web/packages/data.table/vignettes/datatable-intro.html
+library(data.table)
+## Try to coerce to date of form "Jan 01" #Abbreviated month and day
+dates <- as.Date(computers_text, format = '%b %d')  
+#More info at: https://www.r-bloggers.com/2013/08/date-formats-in-r/
+## Get index of all the valid dates (i.e. non-NA)
+idates <- which(!is.na(dates))                
+## Iterate over our date index vector and then combine into a data.table. 
+## We'll use the listing date to define the start of each new entry. Note, however, 
+## that it usually comes second among the five possible text fields. (There is 
+## normally a duplicate price field first.) So we have to adjust the way we 
+## define the end of that entry; basically it's the next index position in the 
+## sequence minus two.
+computers_dt =
+  rbindlist(lapply(   
+    seq_along(idates),  #over the idates index
+    function(i) {
+      start = idates[i]      #listing date will be start. Remember that price duplicates (1st and 3rd) 
+      end = ifelse(i!=length(idates), idates[i+1]-2, tail(idates, 1))  
+      data.table(t(computers_text[start:end]))
+    }
+    ), fill = TRUE) ## Use fill=TRUE arg so that rbindlist allocates 5 cols to each row
+
+computers_dt
+```
+
+
+```{r speakers_dt_clean, dependson=speakers_dt}
+names(computers_dt) = c('date', 'description', 'price', 'location')
+
+computers_dt[, ':=' (date = as.Date(date, format = '%b %d'),
+                    price = as.numeric(gsub('\\$|\\,', '', price)))]
+
+## How about omitting ()'s from location?
+## omit dollars from the listing price.
+## Because we only get the month and day, some entries from late last year may
+## have inadvertently been coerced to a future date. Fix those cases.
+computers_dt[date>Sys.Date(), date := date - years(1)]
+
+## Drop missing entries #helps us to drop last row as well.
+computers_dt= computers_dt[!is.na(price)]
+
+computers_dt
+```
+
+
+
